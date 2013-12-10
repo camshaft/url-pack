@@ -5,15 +5,18 @@
 var bnf = require('./bnf');
 var to = bnf.to;
 var from = bnf.from;
+var toD = bnf.toD;
+var fromD = bnf.fromD;
 var extras = bnf.extras;
+var dictExtras = bnf.dict;
 var valid = bnf.valid;
 var digit = bnf.digit;
 
 // Reserve for integer compression
-var intTo = reserve();
-var intFrom = '<';
-to[intFrom] = intTo;
-from[intTo] = intFrom;
+var intChar = reserve();
+
+// Reserve for double chars
+var dChar = reserve();
 
 /**
  * Initialize a compressor
@@ -24,7 +27,7 @@ from[intTo] = intFrom;
 function Compressor(dict) {
   this.setDict(dict || []);
   // TODO copy the bnf to the instance for mutations
-};
+}
 
 /**
  * Update the compressors dictionary
@@ -40,7 +43,7 @@ Compressor.prototype.setDict = function(words) {
 
   if (!words || !words.length) return this;
 
-  if (words.length > extras.length) {
+  if (words.length > dictExtras.length) {
     throw new TypeError('Provided dict exceeds length of available characters');
   }
 
@@ -50,11 +53,14 @@ Compressor.prototype.setDict = function(words) {
 
   for (var i = 0; i < words.length; i++) {
     var word = words[i];
-    var str = self.encode(word, false);
-    res.push(str);
-    var c = extras[i];
+    var str = self.encode(word, true);
+    var c = dictExtras[i];
     dict[str] = c;
-    from[c] = word;
+    fromD[c] = word;
+    str = str.replace(/([^a-zA-Z0-9_-]{1})/g, function(match, c) {
+      return '\\' + c;
+    });
+    res.push(str);
   }
 
   this._dict = dict;
@@ -77,37 +83,30 @@ Compressor.prototype.setDict = function(words) {
 Compressor.prototype.encode = function(str, compressInts) {
   if (!str) return '';
   var chars = '';
-  str = str.toLowerCase();
 
-  if (compressInts !== false) str = this._compressInts(str);
-
-  var inInt = false;
-  for (var i = 0; i < str.length; i += 1) {
-    var c = str[i];
-    if (c === intFrom) {
-      inInt = !inInt;
-      chars = chars + intTo;
-      continue;
-    }
-    if (inInt) {
-      chars = chars + c;
-      continue;
-    }
-
+  for (var i = 0; i < str.length; i = i + 1) {
+    var c = str.charAt(i);
     var t = to[c];
+
+    if (!t) t = toD[c] ? dChar + toD[c] : undefined;
+
     if (typeof t === 'undefined') {
       throw new TypeError('Invalid character ' + c);
     }
 
-    chars = chars + to[c];
+    chars = chars + t;
   }
 
-  if (!this._re) return chars;
+  if (this._re) {
+    var dict = this._dict;
+    chars = chars.replace(this._re, function(m, word) {
+      return dChar + dict[word];
+    });
+  }
 
-  var dict = this._dict;
-  return chars.replace(this._re, function(m, word) {
-    return dict[word];
-  });
+  if (compressInts !== false) chars = this._compressInts(chars);
+
+  return chars;
 };
 
 /**
@@ -123,9 +122,11 @@ Compressor.prototype.decode = function(str) {
   var self = this;
 
   var parsingInt = null;
-  for (var i = 0; i < str.length; i += 1) {
-    var c = str[i];
-    if (c === intTo) {
+  for (var i = 0; i < str.length; i = i + 1) {
+    var c = str.charAt(i);
+
+    // We found an integer character
+    if (c === intChar) {
       if (parsingInt !== null) {
         chars = chars + self._decompressInt(parsingInt);
         parsingInt = null;
@@ -135,13 +136,40 @@ Compressor.prototype.decode = function(str) {
       continue;
     }
 
+    // We found a double character
+    // if (c === dChar) {
+    //   i = i + 1;
+    //   c = str.charAt(i);
+    //   var f = fromD[c];
+    //   if (typeof f === 'undefined') {
+    //     throw new TypeError('Invalid character ' + c);
+    //   }
+    //   if (parsingInt !== null) {
+    //     parsingInt = parsingInt + f;
+    //   } else {
+    //     chars = chars + f;
+    //   }
+    //   continue;
+    // }
+
+    // We're in the middle of parsing an integer
     if (parsingInt !== null) {
       parsingInt = parsingInt + c;
       continue;
     }
 
+    // Either pull from the double character list or the regular list
     var f = from[c];
+    if (c === dChar) {
+      i = i + 1;
+      c = str.charAt(i);
+      f = fromD[c];
+    }
+
     if (typeof f === 'undefined') {
+      console.log(str);
+      console.log(chars);
+      console.log(i, c, f);
       throw new TypeError('Invalid character ' + c);
     }
 
@@ -160,7 +188,7 @@ Compressor.prototype.decode = function(str) {
 Compressor.prototype._compressInts = function(str) {
   return str.replace(/([1-9][0-9]{4,14})/g, function(m, number) {
     var converted = convert(number, digit, valid);
-    return intFrom + converted + intFrom;
+    return intChar + converted + intChar;
   });
 };
 
@@ -181,22 +209,21 @@ Compressor.prototype._decompressInt = function(str) {
 module.exports = new Compressor([
   'http://',
   'https://',
-  '/?',
   '.com',
-  // The most common letter pairs
-  // http://en.wikipedia.org/wiki/Letter_frequency
-  'th',
-  'he',
-  'an',
-  're',
-  'er',
-  'in',
-  'on',
-  'at',
-  'nd',
-  'st',
-  'es',
-  'en'
+  'THE',
+  'the',
+  'EST',
+  'est',
+  'FOR',
+  'for',
+  'AND',
+  'and',
+  'HIS',
+  'his',
+  'ENT',
+  'ent',
+  'THA',
+  'tha'
 ]);
 
 /**
@@ -233,6 +260,5 @@ function convert(src, srctable, desttable) {
 
 function reserve() {
   extras.pop();
-  valid.pop();
   return valid.pop();
 }
